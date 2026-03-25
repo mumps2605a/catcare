@@ -1,9 +1,4 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Heart, 
@@ -16,9 +11,81 @@ import {
   Cat, 
   Sparkles,
   ArrowRight,
-  CheckCircle2
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
+import { db, collection, onSnapshot, query, orderBy } from './firebase';
+
+// Error Boundary Component
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-brand-cream p-6">
+          <div className="bg-white p-8 rounded-brand shadow-xl max-w-md w-full text-center border-t-4 border-brand-orange">
+            <AlertCircle size={48} className="text-brand-orange mx-auto mb-4" />
+            <h2 className="text-2xl font-sans font-bold mb-4 text-brand-ink">哎呀！出錯了</h2>
+            <p className="text-gray-600 mb-6">
+              應用程式發生了一些問題。請嘗試重新整理頁面。
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="bg-brand-orange text-white px-6 py-2 rounded-brand font-bold hover:shadow-lg transition-all"
+            >
+              重新整理
+            </button>
+            {process.env.NODE_ENV === 'development' && (
+              <pre className="mt-6 p-4 bg-gray-100 rounded text-left text-xs overflow-auto max-h-40">
+                {this.state.error?.message}
+              </pre>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// Firestore Error Handler
+enum OperationType {
+  GET = 'get',
+  WRITE = 'write',
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 // Initialize Gemini for the "Automation" demo
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
@@ -32,14 +99,143 @@ const COLORS = {
 };
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
+}
+
+function AppContent() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  // 輔助函數：從 HTML 內容中抓取第一張圖片的 URL (方案二強化版)
+  const getFirstImageFromContent = (html: string) => {
+    if (!html || typeof document === 'undefined') return null;
+    
+    try {
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      
+      // 1. 優先尋找非 Emoji 的圖片
+      const imgs = Array.from(div.querySelectorAll('img'));
+      const validImg = imgs.find(img => img.src && !img.src.includes('s.w.org/images/core/emoji') && !img.src.includes('avatar'));
+      if (validImg) return validImg.src;
+
+      // 2. 尋找 YouTube 嵌入影片的縮圖 (針對 Amazon 沒貨的情況)
+      const iframe = div.querySelector('iframe[src*="youtube.com"]');
+      if (iframe) {
+        const src = iframe.getAttribute('src');
+        const videoId = src?.match(/(?:embed\/|v=)([^&?]+)/)?.[1];
+        if (videoId) return `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+      }
+    } catch (e) {}
+
+    // 3. 正則備案：尋找圖片網址
+    const rawUrlRegex = /(https?:\/\/[^\s"']+\.(?:jpg|jpeg|gif|png|webp|svg|avif))/i;
+    const urlMatch = html.match(rawUrlRegex);
+    if (urlMatch && urlMatch[1]) return urlMatch[1];
+
+    return null;
+  };
+
+  const [academyArticles, setAcademyArticles] = useState<any[]>([]);
+  const [reviewArticles, setReviewArticles] = useState<any[]>([]);
+  const [loadingArticles, setLoadingArticles] = useState(true);
+  const [loadingReviews, setLoadingReviews] = useState(true);
+
+  const DEFAULT_ARTICLES = [
+    { tag: "健康", title: "貓咪換季掉毛怎麼辦？五個居家護理小撇步", image: "https://picsum.photos/seed/cat-care-1/400/300", description: "換季護理指南", link: "#" },
+    { tag: "行為", title: "為什麼貓咪喜歡推倒桌上的東西？專家解密", image: "https://picsum.photos/seed/cat-care-2/400/300", description: "行為學解析", link: "#" },
+    { tag: "飲食", title: "全濕食還是半濕食？找出最適合你家貓咪的方案", image: "https://picsum.photos/seed/cat-care-3/400/300", description: "營養學建議", link: "#" },
+    { tag: "環境", title: "小坪數也能打造貓咪天堂：垂直空間利用指南", image: "https://picsum.photos/seed/cat-care-4/400/300", description: "空間設計靈感", link: "#" }
+  ];
+
+  const DEFAULT_REVIEWS = [
+    { 
+      tag: "熱門測評", 
+      title: "Furbo 360° Dog Camera 深度評測：2026 實測優缺點與避坑指南", 
+      image: "https://m.media-amazon.com/images/I/71TNkx-2eeL._AC_UL320_.jpg", 
+      description: "這款專為寵物設計的攝影機真的好用嗎？我們針對連線穩定度、夜視功能以及丟零食互動進行了為期一個月的實測...", 
+      link: "https://mumpsaiweb.zeabur.app/furbo-360-dog-camera-%e6%b7%b1%e5%ba%a6%e8%a9%95%e6%b8%ac/" 
+    },
+    { 
+      tag: "專業測評", 
+      title: "Roborock S8 Pro Ultra 掃地機器人 深度評測：2026 實測優缺點與避坑指南", 
+      image: "https://picsum.photos/seed/review-2/800/450", 
+      description: "家有毛小孩，掃地機器人是必備嗎？Roborock S8 Pro Ultra 的自動清洗與烘乾功能是否能應對貓毛大軍？", 
+      link: "https://mumpsaiweb.zeabur.app/roborock-s8-pro-ultra-%e6%8e%83%e5%9c%b0%e6%a9%9f%e5%99%a8%e4%ba%ba-%e6%b7%b1%e5%ba%a6%e8%a9%95%e6%b8%ac/" 
+    }
+  ];
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 50);
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  useEffect(() => {
+    const fetchWordPressData = async () => {
+      try {
+        const catResponse = await fetch('https://mumpsaiweb.zeabur.app/wp-json/wp/v2/categories?per_page=100');
+        if (!catResponse.ok) throw new Error('無法取得分類資訊');
+        const categories = await catResponse.json();
+        
+        const academyCat = categories.find((c: any) => c.name.includes('小學堂') || c.slug.includes('小學堂'));
+        const reviewCat = categories.find((c: any) => c.name.includes('專業測評') || c.slug.includes('專業測評'));
+
+        if (academyCat) {
+          const res = await fetch(`https://mumpsaiweb.zeabur.app/wp-json/wp/v2/posts?_embed&per_page=4&categories=${academyCat.id}&status=publish`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.length > 0) {
+              setAcademyArticles(data.map((post: any) => {
+                const contentImg = getFirstImageFromContent(post.content.rendered) || getFirstImageFromContent(post.excerpt.rendered);
+                return {
+                  id: post.id,
+                  title: post.title.rendered,
+                  tag: '小學堂',
+                  description: post.excerpt.rendered.replace(/<[^>]*>?/gm, '').substring(0, 50) + '...',
+                  image: contentImg || post._embedded?.['wp:featuredmedia']?.[0]?.source_url || `https://picsum.photos/seed/wp-${post.id}/400/300`,
+                  link: post.link
+                };
+              }));
+            }
+          }
+        }
+        setLoadingArticles(false);
+
+        if (reviewCat) {
+          const res = await fetch(`https://mumpsaiweb.zeabur.app/wp-json/wp/v2/posts?_embed&per_page=2&categories=${reviewCat.id}&status=publish`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.length > 0) {
+              setReviewArticles(data.map((post: any) => {
+                const contentImg = getFirstImageFromContent(post.content.rendered) || getFirstImageFromContent(post.excerpt.rendered);
+                return {
+                  id: post.id,
+                  title: post.title.rendered,
+                  tag: '專業測評',
+                  description: post.excerpt.rendered.replace(/<[^>]*>?/gm, '').substring(0, 100) + '...',
+                  image: contentImg || post._embedded?.['wp:featuredmedia']?.[0]?.source_url || `https://picsum.photos/seed/review-${post.id}/800/450`,
+                  link: post.link
+                };
+              }));
+            }
+          }
+        }
+        setLoadingReviews(false);
+      } catch (error) {
+        console.error('WordPress Fetch Error:', error);
+        setLoadingArticles(false);
+        setLoadingReviews(false);
+      }
+    };
+    fetchWordPressData();
+  }, []);
+
+  const displayArticles = academyArticles.length > 0 ? academyArticles : (loadingArticles ? [] : DEFAULT_ARTICLES);
+  const displayReviews = reviewArticles.length > 0 ? reviewArticles : (loadingReviews ? [] : DEFAULT_REVIEWS);
 
   return (
     <div className="min-h-screen bg-brand-cream font-serif selection:bg-brand-peach selection:text-brand-ink">
@@ -58,9 +254,14 @@ export default function App() {
             <a href="#why" className="hover:text-brand-orange transition-colors">為什麼選擇我們</a>
             <a href="#reviews" className="hover:text-brand-orange transition-colors">專業測評</a>
             <a href="#academy" className="hover:text-brand-orange transition-colors">貓奴小學堂</a>
-            <button className="bg-brand-orange text-white px-6 py-2.5 rounded-brand font-bold hover:shadow-lg hover:shadow-brand-orange/20 transition-all active:scale-95">
+            <a 
+              href="https://mumpsaiweb.zeabur.app/category/%e7%94%a2%e5%93%81/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="bg-brand-orange text-white px-6 py-2.5 rounded-brand font-bold hover:shadow-lg hover:shadow-brand-orange/20 transition-all active:scale-95 text-center"
+            >
               立即選購
-            </button>
+            </a>
           </div>
 
           {/* Mobile Toggle */}
@@ -83,9 +284,15 @@ export default function App() {
               <a href="#why" onClick={() => setIsMenuOpen(false)}>為什麼選擇我們</a>
               <a href="#reviews" onClick={() => setIsMenuOpen(false)}>專業測評</a>
               <a href="#academy" onClick={() => setIsMenuOpen(false)}>貓奴小學堂</a>
-              <button className="bg-brand-orange text-white py-4 rounded-brand mt-4">
+              <a 
+                href="https://mumpsaiweb.zeabur.app/category/%e7%94%a2%e5%93%81/"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setIsMenuOpen(false)}
+                className="bg-brand-orange text-white py-4 rounded-brand mt-4 text-center"
+              >
                 立即選購
-              </button>
+              </a>
             </div>
           </motion.div>
         )}
@@ -133,8 +340,8 @@ export default function App() {
           >
             <div className="aspect-[4/5] rounded-brand overflow-hidden shadow-2xl relative z-10">
               <img 
-                src="https://picsum.photos/seed/cat-play/800/1000" 
-                alt="Happy cat playing" 
+                src="https://mumpsaiweb.zeabur.app/wp-content/uploads/2026/03/Gemini_Generated_Image_iq1hbkiq1hbkiq1h.png" 
+                alt="Mumps Cat Care Hero" 
                 className="w-full h-full object-cover hover:scale-105 transition-transform duration-700"
                 referrerPolicy="no-referrer"
               />
@@ -212,7 +419,7 @@ export default function App() {
               </p>
             </div>
             <a 
-              href="https://mumpsaiweb.zeabur.app/category/" 
+              href="https://mumpsaiweb.zeabur.app/category/%e5%b0%88%e6%a5%ad%e6%b8%ac%e8%a9%95/" 
               target="_blank" 
               rel="noopener noreferrer"
               className="text-brand-orange font-sans font-bold flex items-center gap-2 hover:gap-4 transition-all"
@@ -222,45 +429,33 @@ export default function App() {
           </div>
 
           <div className="grid md:grid-cols-2 gap-12">
-            <div className="group cursor-pointer">
-              <div className="aspect-video rounded-brand overflow-hidden mb-6 relative">
-                <img 
-                  src="https://picsum.photos/seed/cat-toy-1/800/450" 
-                  alt="Cat toy review" 
-                  className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
-                  referrerPolicy="no-referrer"
-                />
-                <div className="absolute top-4 left-4 bg-white/90 backdrop-blur px-3 py-1 rounded-full text-[10px] font-sans font-bold uppercase tracking-widest">
-                  熱門測評
+            {displayReviews.map((review, idx) => (
+              <a 
+                key={review.id || idx}
+                href={review.link || "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group cursor-pointer block"
+              >
+                <div className="aspect-video rounded-brand overflow-hidden mb-6 relative">
+                  <img 
+                    src={review.image} 
+                    alt={review.title} 
+                    className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="absolute top-4 left-4 bg-white/90 backdrop-blur px-3 py-1 rounded-full text-[10px] font-sans font-bold uppercase tracking-widest">
+                    {review.tag}
+                  </div>
                 </div>
-              </div>
-              <h3 className="text-2xl font-sans font-bold mb-3 group-hover:text-brand-orange transition-colors">
-                2024 年度最佳互動式貓抓板：材質與耐用度深度解析
-              </h3>
-              <p className="text-gray-600 line-clamp-2">
-                我們測試了市面上 15 款熱銷貓抓板，從紙質密度到膠水安全性，為你找出 CP 值最高的那一款...
-              </p>
-            </div>
-
-            <div className="group cursor-pointer">
-              <div className="aspect-video rounded-brand overflow-hidden mb-6 relative">
-                <img 
-                  src="https://picsum.photos/seed/cat-toy-2/800/450" 
-                  alt="Cat toy review" 
-                  className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
-                  referrerPolicy="no-referrer"
-                />
-                <div className="absolute top-4 left-4 bg-white/90 backdrop-blur px-3 py-1 rounded-full text-[10px] font-sans font-bold uppercase tracking-widest">
-                  行為學專欄
-                </div>
-              </div>
-              <h3 className="text-2xl font-sans font-bold mb-3 group-hover:text-brand-orange transition-colors">
-                如何挑選適合「高敏感貓」的躲藏空間？
-              </h3>
-              <p className="text-gray-600 line-clamp-2">
-                高敏感貓咪需要更強的安全感。本文將教你如何從材質、開口方向與高度來挑選貓窩...
-              </p>
-            </div>
+                <h3 className="text-2xl font-sans font-bold mb-3 group-hover:text-brand-orange transition-colors">
+                  {review.title}
+                </h3>
+                <p className="text-gray-600 line-clamp-2">
+                  {review.description}
+                </p>
+              </a>
+            ))}
           </div>
         </div>
       </section>
@@ -308,15 +503,16 @@ export default function App() {
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {[
-              { tag: "健康", title: "貓咪換季掉毛怎麼辦？五個居家護理小撇步" },
-              { tag: "行為", title: "為什麼貓咪喜歡推倒桌上的東西？專家解密" },
-              { tag: "飲食", title: "全濕食還是半濕食？找出最適合你家貓咪的方案" },
-              { tag: "環境", title: "小坪數也能打造貓咪天堂：垂直空間利用指南" }
-            ].map((post, idx) => (
-              <div key={idx} className="p-8 bg-white rounded-brand shadow-sm hover:shadow-md transition-all cursor-pointer group border border-transparent hover:border-brand-peach">
+            {displayArticles.map((post, idx) => (
+              <a 
+                key={post.id || idx} 
+                href={post.link || "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-8 bg-white rounded-brand shadow-sm hover:shadow-md transition-all cursor-pointer group border border-transparent hover:border-brand-peach"
+              >
                 <span className="text-[10px] font-sans font-bold text-brand-sage uppercase tracking-widest mb-4 block">
-                  {post.tag}
+                  {post.tag || post.category}
                 </span>
                 <h4 className="text-lg font-sans font-bold leading-tight group-hover:text-brand-orange transition-colors">
                   {post.title}
@@ -324,49 +520,8 @@ export default function App() {
                 <div className="mt-6 flex items-center text-xs font-sans font-bold text-gray-400 group-hover:text-brand-ink transition-colors">
                   閱讀全文 <ChevronRight size={14} />
                 </div>
-              </div>
+              </a>
             ))}
-          </div>
-        </div>
-      </section>
-
-      {/* AI Automation Demo Widget */}
-      <section className="py-24 bg-brand-ink text-white">
-        <div className="max-w-4xl mx-auto px-6 text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 rounded-full text-brand-orange font-sans font-bold text-xs uppercase tracking-widest mb-8">
-            <Sparkles size={14} />
-            <span>AI Powered Automation</span>
-          </div>
-          <h2 className="text-3xl md:text-5xl font-sans font-bold mb-8">自動化內容生成</h2>
-          <p className="text-gray-400 text-lg mb-12">
-            利用 n8n 與 Gemini API，我們能自動化抓取全球寵物趨勢，並生成高品質的導購文章，讓你的品牌始終走在前端。
-          </p>
-          
-          <div className="bg-white/5 p-8 rounded-brand border border-white/10 text-left">
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-12 h-12 bg-brand-orange rounded-brand flex items-center justify-center">
-                <Sparkles size={24} />
-              </div>
-              <div>
-                <p className="font-sans font-bold">AI 導購寫手</p>
-                <p className="text-xs text-gray-500">正在模擬生成評測文...</p>
-              </div>
-            </div>
-            <div className="space-y-4">
-              <div className="h-4 bg-white/10 rounded w-3/4 animate-pulse"></div>
-              <div className="h-4 bg-white/10 rounded w-full animate-pulse"></div>
-              <div className="h-4 bg-white/10 rounded w-5/6 animate-pulse"></div>
-              <div className="h-4 bg-white/10 rounded w-2/3 animate-pulse"></div>
-            </div>
-            <div className="mt-8 pt-8 border-t border-white/10 flex justify-between items-center">
-              <div className="flex gap-2">
-                <div className="w-8 h-8 bg-brand-sage/20 rounded-full"></div>
-                <div className="w-8 h-8 bg-brand-peach/20 rounded-full"></div>
-              </div>
-              <button className="text-brand-orange font-sans font-bold text-sm flex items-center gap-2">
-                查看自動化工作流 <ChevronRight size={16} />
-              </button>
-            </div>
           </div>
         </div>
       </section>
