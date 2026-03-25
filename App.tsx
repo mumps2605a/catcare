@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -95,6 +96,7 @@ const COLORS = {
   peach: '#FFE5D9',
   sage: '#B7B7A4',
   orange: '#FF8C42',
+  star: '#FFD700',
   ink: '#2D2D2D'
 };
 
@@ -350,16 +352,6 @@ function AppContent() {
             {/* Decorative Elements */}
             <div className="absolute -top-6 -right-6 w-32 h-32 bg-brand-peach rounded-full -z-0 blur-2xl opacity-60"></div>
             <div className="absolute -bottom-10 -left-10 w-48 h-48 bg-brand-sage/20 rounded-full -z-0 blur-3xl"></div>
-            
-            <div className="absolute bottom-8 -left-8 bg-white p-6 rounded-brand shadow-xl z-20 hidden lg:block max-w-[200px]">
-              <div className="flex gap-1 mb-2">
-                {[1,2,3,4,5].map(i => <Star key={i} size={14} fill={COLORS.orange} color={COLORS.orange} />)}
-              </div>
-              <p className="text-xs font-sans font-medium text-gray-500 italic">
-                "這是我買過最有質感的貓抓板，主子愛不釋手！"
-              </p>
-              <p className="text-[10px] font-sans font-bold mt-2 uppercase tracking-widest">— 台北 林小姐</p>
-            </div>
           </motion.div>
         </div>
       </section>
@@ -428,32 +420,40 @@ function AppContent() {
             </a>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-12">
+          <div className="flex flex-col gap-16">
             {displayReviews.map((review, idx) => (
               <a 
                 key={review.id || idx}
                 href={review.link || "#"}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="group cursor-pointer block"
+                className="group cursor-pointer grid md:grid-cols-2 gap-8 items-center"
               >
-                <div className="aspect-video rounded-brand overflow-hidden mb-6 relative">
+                <div className="aspect-video rounded-brand overflow-hidden relative bg-white flex items-center justify-center border border-brand-peach/30">
                   <img 
                     src={review.image} 
                     alt={review.title} 
-                    className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+                    className="max-w-full max-h-full object-contain group-hover:scale-105 transition-transform duration-700"
                     referrerPolicy="no-referrer"
                   />
                   <div className="absolute top-4 left-4 bg-white/90 backdrop-blur px-3 py-1 rounded-full text-[10px] font-sans font-bold uppercase tracking-widest">
                     {review.tag}
                   </div>
                 </div>
-                <h3 className="text-2xl font-sans font-bold mb-3 group-hover:text-brand-orange transition-colors">
-                  {review.title}
-                </h3>
-                <p className="text-gray-600 line-clamp-2">
-                  {review.description}
-                </p>
+                <div>
+                  <div className="flex gap-1 mb-4">
+                    {[1,2,3,4,5].map(i => <Star key={i} size={18} fill={COLORS.star} color={COLORS.star} />)}
+                  </div>
+                  <h3 className="text-2xl md:text-3xl font-sans font-bold mb-4 group-hover:text-brand-orange transition-colors">
+                    {review.title}
+                  </h3>
+                  <p className="text-gray-600 text-lg leading-relaxed mb-6">
+                    {review.description}
+                  </p>
+                  <div className="inline-flex items-center gap-2 text-brand-orange font-sans font-bold group-hover:gap-4 transition-all">
+                    閱讀完整測評報告 <ChevronRight size={20} />
+                  </div>
+                </div>
               </a>
             ))}
           </div>
@@ -546,16 +546,6 @@ function AppContent() {
                 </div>
               ))}
             </div>
-          </div>
-
-          <div>
-            <h5 className="font-sans font-bold mb-6 uppercase tracking-widest text-xs">快速連結</h5>
-            <ul className="space-y-4 text-sm text-gray-500 font-sans font-medium">
-              <li><a href="#" className="hover:text-brand-orange transition-colors">關於我們</a></li>
-              <li><a href="#" className="hover:text-brand-orange transition-colors">配送政策</a></li>
-              <li><a href="#" className="hover:text-brand-orange transition-colors">退換貨須知</a></li>
-              <li><a href="#" className="hover:text-brand-orange transition-colors">隱私權條款</a></li>
-            </ul>
           </div>
 
           <div>
